@@ -1423,6 +1423,10 @@ void pfmergeCommand(redisClient *c);
 void pfdebugCommand(redisClient *c);
 void latencyCommand(redisClient *c);
 
+void msgappendCommand(redisClient *c);
+void msglenCommand(redisClient *c);
+void msgfetchCommand(redisClient *c);
+
 #if defined(__GNUC__)
 void *calloc(size_t count, size_t size) __attribute__ ((deprecated));
 void free(void *ptr) __attribute__ ((deprecated));
