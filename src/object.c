@@ -246,6 +246,7 @@ void decrRefCount(robj *o) {
         case REDIS_SET: freeSetObject(o); break;
         case REDIS_ZSET: freeZsetObject(o); break;
         case REDIS_HASH: freeHashObject(o); break;
+        case REDIS_MSG: freeMsgObject(o); break;
         default: redisPanic("Unknown object type"); break;
         }
         zfree(o);
