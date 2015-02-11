@@ -1,3 +1,31 @@
+== 介绍 ==
+基于redis 增加新的数据类型，缓存会话列表最新一屏消息索引
+
+* 一致性：按照version, preversion 对齐消息，无法对齐时自动删除key
+* 最新：只保留一个会话最新指定数条，避免高热度数据过长
+* 过期：可更加msgappend 返回是否1设置过期时间，或者组合msgcreate msgappendx 只缓存活跃用户数据
+
+== 命令 ==
+
+* 创建新的key
+ msgcreate key(string) max_fileds max_fleld_len expire_ttl
+
+* 写入消息(key不存在即自动创建key)
+ msgappend key(string)  field(long)  version(long) perversion(long)  value(long)
+
+* 写入消息(key 不存在丢弃)
+ msgappendx key(string)  field(long)  version(long) perversion(long)  value(long)
+
+* 读取消息
+ msgfetch key(string) max_version
+
+* 清除消息
+ msgrembyversion key(string) max_version
+
+* 消息长度
+ msglen key
+
+
 Where to find complete Redis documentation?
 -------------------------------------------
 

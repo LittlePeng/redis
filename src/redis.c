@@ -275,9 +275,12 @@ struct redisCommand redisCommandTable[] = {
     {"pfmerge",pfmergeCommand,-2,"wm",0,NULL,1,-1,1,0,0},
     {"pfdebug",pfdebugCommand,-3,"w",0,NULL,0,0,0,0,0},
     {"latency",latencyCommand,-2,"arslt",0,NULL,0,0,0,0,0},
-    {"msgfetch",msgfetchCommand,-2,"rF",0,NULL,1,1,1,0,0},
-    {"msglen",msglenCommand,2,"rF",0,NULL,1,1,1,0,0},
-    {"msgappend",msgappendCommand,6,"wm",0,NULL,1,1,1,0,0}
+    {"msgcreate",msgcreateCommand,5,"wm",0,NULL,1,1,1,0,0},
+    {"msgappend",msgappendCommand,6,"wm",0,NULL,1,1,1,0,0},
+    {"msgappendx",msgappendxCommand,6,"wm",0,NULL,1,1,1,0,0},
+    {"msgrembyversion",msgrembyversionCommand,3,"wm",0,NULL,1,1,1,0,0},
+    {"msgfetch",msgfetchCommand,3,"rF",0,NULL,1,1,1,0,0},
+    {"msglen",msglenCommand,2,"rF",0,NULL,1,1,1,0,0}
 };
 
 /*============================ Utility functions ============================ */
