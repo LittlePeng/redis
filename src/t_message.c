@@ -133,11 +133,12 @@ static int appendMsg(msgObject *obj, int64_t field, vectorEntry *val) {
 
         enFqueue(queue, obj->max_field_len, val, &del);
 
-        obj->vmax = val->vcurrent;
         if(is_new_obj(obj)){
             obj->vmin = val->vprev;
             obj->vmin_full = val->vprev;
         }
+        obj->vmax = val->vcurrent;
+
         if(del.vcurrent > 0)
             del_vector(obj, &del);
 
@@ -155,18 +156,6 @@ static robj *dbAddmsgObject(redisClient *c, robj *key, msgObject *obj) {
         val->encoding = REDIS_ENCODING_MSG;
         dbAdd(c->db, key, val);
         return val;
-}
-
-static robj *msgLookupWriteOrCreate(redisClient *c) {
-    robj *key = c->argv[1];
-    robj *o = lookupKeyWrite(c->db, key);
-
-    if(o == NULL)
-        o = dbAddmsgObject(c, key, newObj());
-    else if(!checkType(c, o, REDIS_MSG))
-        return NULL;
-
-    return o;
 }
 
 void msgcreateCommand(redisClient *c) {
@@ -201,17 +190,23 @@ void msgcreateCommand(redisClient *c) {
 }
 
 void msgappendCommand(redisClient *c) {
-    robj *o = NULL;
+    robj *key = c->argv[1];
     int64_t field;
     vectorEntry vector;
+    robj *o = lookupKeyWrite(c->db, key);
 
-    if((o = msgLookupWriteOrCreate(c)) == NULL) return;
+    if(o == NULL)
+        o = dbAddmsgObject(c, key, newObj());
+
+    if(checkType(c, o, REDIS_MSG)) return;
+
     if(!string2ll(c->argv[2]->ptr, sdslen(c->argv[2]->ptr), &field) ||
             !string2ll(c->argv[3]->ptr, sdslen(c->argv[3]->ptr), &vector.vcurrent) ||
             !string2ll(c->argv[4]->ptr, sdslen(c->argv[4]->ptr), &vector.vprev) ||
             !string2ll(c->argv[5]->ptr, sdslen(c->argv[5]->ptr), &vector.value)) {
        return addReply(c, shared.syntaxerr);
     }
+
     int len = appendMsg(o->ptr, field, &vector);
     addReplyLongLong(c, len);
 }
@@ -230,7 +225,7 @@ void msglenCommand(redisClient *c){
     if(o == NULL){
         addReplyLongLong(c, -1);
     } else{
-        if(checkType(c, o, REDIS_MSG)){
+        if(!checkType(c, o, REDIS_MSG)){
             addReplyLongLong(c, ((msgObject *)o->ptr)->len);
         }
     }
@@ -245,6 +240,10 @@ void msgfetchCommand(redisClient *c){
     int64_t vbegin;
     msgObject *obj;
 
+    if(!string2ll(c->argv[2]->ptr, sdslen(c->argv[2]->ptr), &vbegin)) {
+        addReply(c, shared.syntaxerr);
+    }
+
     robj *o = lookupKeyRead(c->db,c->argv[1]);
     if(o == NULL){
         addReplyLongLong(c, -1);
@@ -253,16 +252,39 @@ void msgfetchCommand(redisClient *c){
     if(checkType(c,o,REDIS_MSG)) return;
 
     obj = o->ptr;
+    redisLog(REDIS_DEBUG, "obj vmax:%lld, vmin=%lld, vbegin=%lld", obj->vmax, obj->vmin, vbegin);
     if(obj->vmax == vbegin){
         addReply(c, shared.emptymultibulk);
         return;
     }
 
-    if(!string2ll(c->argv[2]->ptr, sdslen(c->argv[2]->ptr), &vbegin)) {
-        addReply(c, shared.syntaxerr);
-    }
+    redisLog(REDIS_DEBUG, "list len:%d", obj->len);
+    int length =listLength(obj->aligned) * 2;
+    addReplyMultiBulkLen(c, length);
 
-    addReplyStatus(c, "TODO");
+    listNode *ln = obj->aligned->head;
+    while(ln != NULL) {
+        fqueue *queue = ln->value;
+        addReplyBulkLongLong(c, queue->field);
+        vectorEntry *vectors = (vectorEntry*)queue->data;
+
+        char buf[192 * queue->count];
+        int len=0;
+
+        for(int i=0; i<queue->count; i++){
+            if(i != 0) {
+                buf[len++]='\r';
+                buf[len++]='\n';
+            }
+            len += ll2string(buf+len, sizeof(buf)-len, vectors[i].vcurrent);
+            buf[len++] = ' ';
+            len += ll2string(buf+len, sizeof(buf)-len, vectors[i].vprev);
+            buf[len++] = ' ';
+            len += ll2string(buf+len, sizeof(buf)-len, vectors[i].value);
+        }
+        addReplyBulkCBuffer(c,buf,len);
+        ln = ln->next;
+    }
 }
 
 void msgrembyversionCommand(redisClient *c) {
