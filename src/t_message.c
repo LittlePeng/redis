@@ -237,10 +237,10 @@ void msglenCommand(redisClient *c){
 //  list
 void msgfetchCommand(redisClient *c){
     robj *key = c->argv[1];
-    int64_t vbegin;
+    int64_t vbegin=0;
     msgObject *obj;
 
-    if(!string2ll(c->argv[2]->ptr, sdslen(c->argv[2]->ptr), &vbegin)) {
+    if(c->argc == 3 && !string2ll(c->argv[2]->ptr, sdslen(c->argv[2]->ptr), &vbegin)) {
         addReply(c, shared.syntaxerr);
     }
 
@@ -252,13 +252,11 @@ void msgfetchCommand(redisClient *c){
     if(checkType(c,o,REDIS_MSG)) return;
 
     obj = o->ptr;
-    redisLog(REDIS_DEBUG, "obj vmax:%lld, vmin=%lld, vbegin=%lld", obj->vmax, obj->vmin, vbegin);
     if(obj->vmax == vbegin){
         addReply(c, shared.emptymultibulk);
         return;
     }
 
-    redisLog(REDIS_DEBUG, "list len:%d", obj->len);
     int length =listLength(obj->aligned) * 2;
     addReplyMultiBulkLen(c, length);
 

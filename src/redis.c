@@ -279,7 +279,7 @@ struct redisCommand redisCommandTable[] = {
     {"msgappend",msgappendCommand,6,"wm",0,NULL,1,1,1,0,0},
     {"msgappendx",msgappendxCommand,6,"wm",0,NULL,1,1,1,0,0},
     {"msgrembyversion",msgrembyversionCommand,3,"wm",0,NULL,1,1,1,0,0},
-    {"msgfetch",msgfetchCommand,3,"rF",0,NULL,1,1,1,0,0},
+    {"msgfetch",msgfetchCommand,-2,"rF",0,NULL,1,1,1,0,0},
     {"msglen",msglenCommand,2,"rF",0,NULL,1,1,1,0,0}
 };
 
