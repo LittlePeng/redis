@@ -52,6 +52,7 @@ static fqueue *createFqueue(int64_t field) {
 }
 
 static void enFqueue(fqueue *queue, int max_len, void *val, void *del){
+    //TODO optimse ringbuffer
     if(queue->free == 0){
         if(queue->count < max_len) {
             int recount = min(max_len, 2*queue->count);
@@ -70,6 +71,17 @@ static void enFqueue(fqueue *queue, int max_len, void *val, void *del){
     memcpy(dest, val, QUEUE_VALUE_SIZE);
     queue->count++;
     queue->free--;
+}
+
+static void deFqueue(fqueue *queue, int count) {
+    assert(queue->count >= count);
+
+    if(queue->count > count){
+        memcpy(queue->data, queue->data + QUEUE_VALUE_SIZE*count,
+                QUEUE_VALUE_SIZE*(queue->count - count));
+    }
+    queue->free+= count;
+    queue->count-= count;
 }
 
 static int fqueue_search(void *queue, void *field) {
@@ -97,7 +109,7 @@ static fqueue *getFqueue(msgObject *obj, int64_t field) {
     listNode *node = listSearchKey(obj->aligned, &field);
     if(node != NULL)
         return node->value;
-    if(listLength(obj->aligned) == obj->max_fields)
+    if(listLength(obj->aligned) == (unsigned long)obj->max_fields)
         return NULL;
     fqueue *queue = createFqueue(field);
     listAddNodeTail(obj->aligned, queue);
@@ -175,7 +187,8 @@ void msgcreateCommand(redisClient *c) {
             !string2l(c->argv[4]->ptr, sdslen(c->argv[4]->ptr), &expire_ttl) ||
             max_fields <= 0 || max_fields > 255 ||
             max_field_len <=0 || max_field_len > 255){
-        return addReply(c, shared.syntaxerr);
+        addReply(c, shared.syntaxerr);
+        return;
     }
     msgObject *obj = newObj();
     obj->max_fields = max_fields;
@@ -204,7 +217,8 @@ void msgappendCommand(redisClient *c) {
             !string2ll(c->argv[3]->ptr, sdslen(c->argv[3]->ptr), &vector.vcurrent) ||
             !string2ll(c->argv[4]->ptr, sdslen(c->argv[4]->ptr), &vector.vprev) ||
             !string2ll(c->argv[5]->ptr, sdslen(c->argv[5]->ptr), &vector.value)) {
-       return addReply(c, shared.syntaxerr);
+       addReply(c, shared.syntaxerr);
+       return;
     }
 
     int len = appendMsg(o->ptr, field, &vector);
@@ -244,7 +258,7 @@ void msgfetchCommand(redisClient *c){
         addReply(c, shared.syntaxerr);
     }
 
-    robj *o = lookupKeyRead(c->db,c->argv[1]);
+    robj *o = lookupKeyRead(c->db, key);
     if(o == NULL){
         addReplyLongLong(c, -1);
         return;
@@ -260,6 +274,7 @@ void msgfetchCommand(redisClient *c){
     int length =listLength(obj->aligned) * 2;
     addReplyMultiBulkLen(c, length);
 
+    //TODO filter
     listNode *ln = obj->aligned->head;
     while(ln != NULL) {
         fqueue *queue = ln->value;
@@ -286,7 +301,52 @@ void msgfetchCommand(redisClient *c){
 }
 
 void msgrembyversionCommand(redisClient *c) {
-    addReplyStatus(c, "TODO");
+    robj *key = c->argv[1];
+    int64_t vbegin = 0;
+    msgObject *obj;
+    int rems = 0;
+
+    if(c->argc == 3 && !string2ll(c->argv[2]->ptr, sdslen(c->argv[2]->ptr), &vbegin)) {
+        addReply(c, shared.syntaxerr);
+    }
+
+    robj *o = lookupKeyRead(c->db, key);
+    if(o == NULL){
+        addReplyLongLong(c, -1);
+        return;
+    }
+    if(checkType(c,o,REDIS_MSG)) return;
+    obj = o->ptr;
+
+    listNode *ln = obj->aligned->head;
+    while(ln != NULL){
+        listNode *current = ln;
+        fqueue *queue = current->value;
+        int expires = 0;
+        vectorEntry *vectors = (vectorEntry*)queue->data;
+        for(int i=0; i < queue->count; i++){
+            if(vectors[i].vcurrent < vbegin) {
+                redisLog(REDIS_DEBUG, "vector vc:%lld vb:%lld", vectors[i].vcurrent, vbegin);
+                expires++;
+            }
+            else
+                break;
+        }
+        if(expires > 0){
+            rems+=expires;
+            redisLog(REDIS_DEBUG, "expires:%d", expires);
+            deFqueue(queue, expires);
+            redisLog(REDIS_DEBUG, "expires ok:%d", expires);
+        }
+
+        ln = current->next;
+        // free empty field
+        // TODO: trim queue free space
+        if(queue->count == 0)
+            listDelNode(obj->aligned, current);
+    }
+    obj->len-=rems;
+    addReplyLongLong(c, rems);
 }
 
 void freeMsgObject(robj *val) {
