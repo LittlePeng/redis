@@ -4,7 +4,8 @@
 #define DEFAULT_MAX_FIELDS 5
 #define DEFAULT_MAX_FIELD_LEN 5
 
-#define MAX_UNALIGN 3
+#define MAX_UNALIGN_COUNT 3
+#define MAX_UNALIGN_TIMEOUT 10*60
 
 #define QUEUE_INIT_COUNT 1
 #define QUEUE_VALUE_SIZE sizeof(vectorEntry)
@@ -27,6 +28,7 @@ typedef struct {
 
 typedef struct {
     int64_t field;
+    time_t time;
     vectorEntry vector;
 } msgEntry;
 
@@ -126,41 +128,100 @@ static void del_vector(msgObject *obj, vectorEntry *del){
         obj->vmin_full = del->vprev;
 }
 
-static void try_align(msgObject *obj){
-    redisLog(REDIS_DEBUG, "begin try_align ...");
+static int do_enFqueue(msgObject *obj, int64_t field, vectorEntry *val) {
+    fqueue *queue = getFqueue(obj, field);
+    if(queue == NULL)
+        return 0;
+
+    redisLog(REDIS_DEBUG, "enFqueue vector:{vc:%lld, vp:%lld, val:%lld}",
+            val->vcurrent, val->vprev, val->value);
+
+    vectorEntry del;
+    del.vcurrent = 0;
+
+    enFqueue(queue, obj->max_field_len, val, &del);
+
+    if(is_new_obj(obj)){
+        obj->vmin = val->vprev;
+        obj->vmin_full = val->vprev;
+    }
+    obj->vmax = val->vcurrent;
+
+    if(del.vcurrent > 0)
+        del_vector(obj, &del);
+    return 1;
 }
 
+static int try_align(msgObject *obj, int64_t field, vectorEntry *val){
+    if(obj->unaligned == NULL && val == NULL) return 1;
+
+    redisLog(REDIS_DEBUG, "begin try_align ...");
+    time_t now = time(NULL);
+    if(obj->unaligned == NULL) {
+        obj->unaligned = listCreate();
+        listSetFreeMethod(obj->unaligned, zfree);
+    }
+    if(val != NULL) {
+        msgEntry *msg = zmalloc(sizeof(msgEntry));
+        msg->field = field;
+        msg->time = now;
+        msg->vector.vcurrent = val->vcurrent;
+        msg->vector.vprev = val->vprev;
+        msg->vector.value = val->value;
+    }
+    listNode *ln;
+    while((ln = obj->unaligned->head) != NULL){
+        int found = 0;
+        while(ln != NULL) {
+            msgEntry *msg = ln->value;
+            if(msg->vector.vprev == obj->vmax){
+                if(do_enFqueue(obj, msg->field, &msg->vector)){
+                    found = 1;
+                    listDelNode(obj->unaligned, ln);
+                    break;
+                }
+                else{
+                    return 0; //align failed
+                }
+            }
+        }
+        if(found)
+            continue;
+        else
+            break;
+    }
+
+    ln = obj->unaligned->head;
+    int uc = listLength(obj->unaligned);
+
+    while(ln != NULL){
+        msgEntry *msg = ln->value;
+        if(now - msg->time > MAX_UNALIGN_TIMEOUT)
+            return 0;
+        ln = ln->next;
+    }
+    if(uc > MAX_UNALIGN_COUNT)
+        return 0;
+    if(uc == 0) {
+        listRelease(obj->unaligned);
+        obj->unaligned = NULL;
+    }
+
+    return 1;
+}
+
+// return queue len (0: aligned failed need del)
 static int appendMsg(msgObject *obj, int64_t field, vectorEntry *val) {
     obj->len++;
     if(is_new_obj(obj) || obj->vmax == val->vprev) {
-        fqueue *queue = getFqueue(obj, field);
-        if(queue == NULL)
-            return 0;
-
-        redisLog(REDIS_DEBUG, "enFqueue vector:{vc:%lld, vp:%lld, val:%lld}",
-            val->vcurrent, val->vprev, val->value);
-
-        vectorEntry del;
-        del.vcurrent = 0;
-
-        enFqueue(queue, obj->max_field_len, val, &del);
-
-        if(is_new_obj(obj)){
-            obj->vmin = val->vprev;
-            obj->vmin_full = val->vprev;
-        }
-        obj->vmax = val->vcurrent;
-
-        if(del.vcurrent > 0)
-            del_vector(obj, &del);
-
-        return obj->len;
+        do_enFqueue(obj, field, val);
     }
     else { //unaligned
         redisLog(REDIS_DEBUG, "unaligned");
-        try_align(obj);
-        return 0;
+        if(!try_align(obj, field, val))
+            return 0;
     }
+    return obj->len;
 }
 
 static robj *dbAddmsgObject(redisClient *c, robj *key, msgObject *obj) {
@@ -222,6 +283,9 @@ void msgappendCommand(redisClient *c) {
     }
 
     int len = appendMsg(o->ptr, field, &vector);
+    if(len == 0) {
+       dbDelete(c->db, key);
+    }
     addReplyLongLong(c, len);
 }
 
@@ -266,6 +330,11 @@ void msgfetchCommand(redisClient *c){
     if(checkType(c,o,REDIS_MSG)) return;
 
     obj = o->ptr;
+    if(!try_align(obj, 0, NULL)) {
+       dbDelete(c->db, key);
+        addReplyLongLong(c, -1);
+    }
+
     if(obj->vmax == vbegin){
         addReply(c, shared.emptymultibulk);
         return;
