@@ -2,7 +2,7 @@
 #include <assert.h>
 
 #define DEFAULT_MAX_FIELDS 5
-#define DEFAULT_MAX_FIELD_LEN 5
+#define DEFAULT_MAX_FIELD_LEN 20
 
 #define MAX_UNALIGN_COUNT 3
 #define MAX_UNALIGN_TIMEOUT 10*60
@@ -155,7 +155,6 @@ static int do_enFqueue(msgObject *obj, int64_t field, vectorEntry *val) {
 static int try_align(msgObject *obj, int64_t field, vectorEntry *val){
     if(obj->unaligned == NULL && val == NULL) return 1;
 
-    redisLog(REDIS_DEBUG, "begin try_align ...");
     time_t now = time(NULL);
     if(obj->unaligned == NULL) {
         obj->unaligned = listCreate();
@@ -168,7 +167,11 @@ static int try_align(msgObject *obj, int64_t field, vectorEntry *val){
         msg->vector.vcurrent = val->vcurrent;
         msg->vector.vprev = val->vprev;
         msg->vector.value = val->value;
+        listAddNodeTail(obj->unaligned, msg);
     }
+
+    redisLog(REDIS_DEBUG, "begin try_align %ld item...", listLength(obj->unaligned));
+
     listNode *ln;
     while((ln = obj->unaligned->head) != NULL){
         int found = 0;
@@ -177,6 +180,8 @@ static int try_align(msgObject *obj, int64_t field, vectorEntry *val){
             if(msg->vector.vprev == obj->vmax){
                 if(do_enFqueue(obj, msg->field, &msg->vector)){
                     found = 1;
+                    redisLog(REDIS_DEBUG, "align ok field:%lld,time:%ld, v:%lld, vp:%lld",
+                            msg->field, msg->time, msg->vector.vcurrent, msg->vector.vprev);
                     listDelNode(obj->unaligned, ln);
                     break;
                 }
@@ -184,6 +189,7 @@ static int try_align(msgObject *obj, int64_t field, vectorEntry *val){
                     return 0; //align failed
                 }
             }
+            ln = ln->next;
         }
         if(found)
             continue;
@@ -196,6 +202,8 @@ static int try_align(msgObject *obj, int64_t field, vectorEntry *val){
 
     while(ln != NULL){
         msgEntry *msg = ln->value;
+        redisLog(REDIS_DEBUG, "align faileds: field:%lld,time:%ld, v:%lld, vp:%lld",
+                msg->field, msg->time, msg->vector.vcurrent, msg->vector.vprev);
         if(now - msg->time > MAX_UNALIGN_TIMEOUT)
             return 0;
         ln = ln->next;
@@ -214,10 +222,10 @@ static int try_align(msgObject *obj, int64_t field, vectorEntry *val){
 static int appendMsg(msgObject *obj, int64_t field, vectorEntry *val) {
     obj->len++;
     if(is_new_obj(obj) || obj->vmax == val->vprev) {
-        do_enFqueue(obj, field, val);
+        if(!do_enFqueue(obj, field, val))
+            return 0;
     }
     else { //unaligned
-        redisLog(REDIS_DEBUG, "unaligned");
         if(!try_align(obj, field, val))
             return 0;
     }
@@ -284,7 +292,8 @@ void msgappendCommand(redisClient *c) {
 
     int len = appendMsg(o->ptr, field, &vector);
     if(len == 0) {
-       dbDelete(c->db, key);
+        redisLog(REDIS_DEBUG, "enqueue failed");
+        dbDelete(c->db, key);
     }
     addReplyLongLong(c, len);
 }
