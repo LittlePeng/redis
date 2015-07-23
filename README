@@ -24,6 +24,14 @@
 
 * 消息长度
  msglen key
+ 
+ 
+功能都可以work，细节还需要优化；大概测试效果(按照50并发，每个会话20条满极端情况)
+- 单个写入：9w/s
+- 批量写入：35w/s 
+
+
+
 
 
 Where to find complete Redis documentation?
